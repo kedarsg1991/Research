@@ -19,13 +19,23 @@ class Database:
     def _init_db(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS bank_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                description TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS bank_transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bank_account_id INTEGER NOT NULL DEFAULT 1,
                 date TEXT NOT NULL,
                 description TEXT NOT NULL,
                 amount REAL NOT NULL,
                 balance REAL,
-                category TEXT DEFAULT 'Uncategorized'
+                category TEXT DEFAULT 'Uncategorized',
+                FOREIGN KEY (bank_account_id) REFERENCES bank_accounts(id)
             )
         """)
         conn.execute("""
@@ -49,17 +59,57 @@ class Database:
                 FOREIGN KEY (invoice_id) REFERENCES invoices(id)
             )
         """)
+        # Insert default bank account if none exists
+        conn.execute("INSERT OR IGNORE INTO bank_accounts (id, name) VALUES (1, 'Primary')")
         conn.commit()
         conn.close()
 
-    def add_bank_transaction(self, date, description, amount, balance=None, category="Uncategorized"):
+    def add_bank_transaction(self, date, description, amount, balance=None, category="Uncategorized", bank_account_id=1):
         conn = sqlite3.connect(self.db_path)
         conn.execute(
-            "INSERT INTO bank_transactions (date, description, amount, balance, category) VALUES (?, ?, ?, ?, ?)",
-            (date, description, amount, balance, category)
+            "INSERT INTO bank_transactions (bank_account_id, date, description, amount, balance, category) VALUES (?, ?, ?, ?, ?, ?)",
+            (bank_account_id, date, description, amount, balance, category)
         )
         conn.commit()
         conn.close()
+
+    def add_bank_account(self, name: str, description: str = "") -> int:
+        """Add a new bank account. Returns the account ID."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.execute(
+                "INSERT INTO bank_accounts (name, description) VALUES (?, ?)",
+                (name, description)
+            )
+            conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            # Account with this name already exists, return its ID
+            row = conn.execute("SELECT id FROM bank_accounts WHERE name = ?", (name,)).fetchone()
+            return row[0] if row else 1
+        finally:
+            conn.close()
+
+    def get_bank_accounts(self) -> List[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM bank_accounts ORDER BY name").fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_bank_account(self, account_id: int) -> Optional[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM bank_accounts WHERE id = ?", (account_id,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def get_bank_account_by_name(self, name: str) -> Optional[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM bank_accounts WHERE name = ?", (name,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
 
     def add_invoice(self, invoice_id, client, date, amount, status="Unpaid"):
         conn = sqlite3.connect(self.db_path)
@@ -73,10 +123,13 @@ class Database:
             pass
         conn.close()
 
-    def get_all_bank_txns(self) -> List[Dict]:
+    def get_all_bank_txns(self, bank_account_id: Optional[int] = None) -> List[Dict]:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM bank_transactions ORDER BY date").fetchall()
+        if bank_account_id:
+            rows = conn.execute("SELECT * FROM bank_transactions WHERE bank_account_id = ? ORDER BY date", (bank_account_id,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM bank_transactions ORDER BY date").fetchall()
         conn.close()
         return [dict(r) for r in rows]
 
@@ -97,18 +150,30 @@ class Database:
         conn.commit()
         conn.close()
 
-    def get_reconciled(self) -> List[Dict]:
+    def get_reconciled(self, bank_account_id: Optional[int] = None) -> List[Dict]:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
-            SELECT r.id, r.bank_txn_id, r.invoice_id, r.matched_at,
-                   bt.date as bank_date, bt.description as bank_desc, bt.amount as bank_amount,
-                   i.invoice_id, i.client, i.date as inv_date, i.amount as inv_amount
-            FROM reconciliations r
-            JOIN bank_transactions bt ON r.bank_txn_id = bt.id
-            JOIN invoices i ON r.invoice_id = i.id
-            ORDER BY r.matched_at DESC
-        """).fetchall()
+        if bank_account_id:
+            rows = conn.execute("""
+                SELECT r.id, r.bank_txn_id, r.invoice_id as rec_inv_id, r.matched_at,
+                       bt.date as bank_date, bt.description as bank_desc, bt.amount as bank_amount,
+                       i.invoice_id as inv_invoice_id, i.client, i.date as inv_date, i.amount as inv_amount
+                FROM reconciliations r
+                JOIN bank_transactions bt ON r.bank_txn_id = bt.id
+                JOIN invoices i ON r.invoice_id = i.id
+                WHERE bt.bank_account_id = ?
+                ORDER BY r.matched_at DESC
+            """, (bank_account_id,)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT r.id, r.bank_txn_id, r.invoice_id as rec_inv_id, r.matched_at,
+                       bt.date as bank_date, bt.description as bank_desc, bt.amount as bank_amount,
+                       i.invoice_id as inv_invoice_id, i.client, i.date as inv_date, i.amount as inv_amount
+                FROM reconciliations r
+                JOIN bank_transactions bt ON r.bank_txn_id = bt.id
+                JOIN invoices i ON r.invoice_id = i.id
+                ORDER BY r.matched_at DESC
+            """).fetchall()
         conn.close()
         return [dict(r) for r in rows]
 
@@ -117,15 +182,21 @@ class Database:
         conn.execute("DELETE FROM bank_transactions")
         conn.execute("DELETE FROM invoices")
         conn.execute("DELETE FROM reconciliations")
+        conn.execute("DELETE FROM bank_accounts WHERE id != 1")
+        conn.execute("INSERT OR IGNORE INTO bank_accounts (id, name) VALUES (1, 'Primary')")
         conn.commit()
         conn.close()
 
-    def get_summary(self) -> Dict:
+    def get_summary(self, bank_account_id: Optional[int] = None) -> Dict:
         conn = sqlite3.connect(self.db_path)
-        bank_total = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM bank_transactions").fetchone()[0]
+        if bank_account_id:
+            bank_total = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM bank_transactions WHERE bank_account_id = ?", (bank_account_id,)).fetchone()[0]
+            unmatched_bank = conn.execute("SELECT COUNT(*) FROM bank_transactions WHERE bank_account_id = ? AND id NOT IN (SELECT bank_txn_id FROM reconciliations)", (bank_account_id,)).fetchone()[0]
+        else:
+            bank_total = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM bank_transactions").fetchone()[0]
+            unmatched_bank = conn.execute("SELECT COUNT(*) FROM bank_transactions WHERE id NOT IN (SELECT bank_txn_id FROM reconciliations)").fetchone()[0]
         inv_total = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM invoices").fetchone()[0]
         matched_count = conn.execute("SELECT COUNT(*) FROM reconciliations").fetchone()[0]
-        unmatched_bank = conn.execute("SELECT COUNT(*) FROM bank_transactions WHERE id NOT IN (SELECT bank_txn_id FROM reconciliations)").fetchone()[0]
         unmatched_inv = conn.execute("SELECT COUNT(*) FROM invoices WHERE matched = 0").fetchone()[0]
         conn.close()
         return {
@@ -147,7 +218,7 @@ def _get_field(row, *names, default=''):
     return default
 
 
-def import_bank_csv(db: Database, filepath: str):
+def import_bank_csv(db: Database, filepath: str, bank_account_id: int = 1):
     """Import bank statement CSV."""
     with open(filepath, 'r', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
@@ -165,7 +236,7 @@ def import_bank_csv(db: Database, filepath: str):
 
                 amount = float(amount_str)
                 balance = float(balance_str) if balance_str else None
-                db.add_bank_transaction(date, desc, amount, balance)
+                db.add_bank_transaction(date, desc, amount, balance, bank_account_id=bank_account_id)
                 count += 1
             except (ValueError, KeyError) as e:
                 click.echo(f"  Warning: skipping row - {e}", err=True)
@@ -198,9 +269,9 @@ def import_invoices_csv(db: Database, filepath: str):
 
 
 # ── Reconciliation Engine ─────────────────────────────────────────
-def run_reconcile(db: Database, tolerance_days: int = 3):
+def run_reconcile(db: Database, tolerance_days: int = 3, bank_account_id: Optional[int] = None):
     """Match bank transactions to invoices by amount + date proximity."""
-    bank_txns = db.get_all_bank_txns()
+    bank_txns = db.get_all_bank_txns(bank_account_id)
     invoices = db.get_all_invoices()
 
     pending_invoices = [inv for inv in invoices if inv['matched'] == 0]
@@ -240,7 +311,8 @@ CATEGORIES = {
     'Office': ['office', 'supplies', 'stationery', 'printer', 'paper', 'stapler'],
     'Entertainment': ['netflix', 'spotify', 'youtube', 'game', 'movie', 'hotstar', 'prime'],
     'Withdrawal': ['atm', 'withdrawal', 'cash'],
-    'Income': ['client', 'invoice', 'payment', 'salary', 'transfer', 'refund', 'credit'],
+    'Income': ['invoice', 'payment', 'salary', 'transfer', 'refund', 'credit'],
+    'Contractor': ['client', 'contractor', 'freelancer', 'subcontractor'],
 }
 
 def categorize(description: str) -> str:
@@ -254,14 +326,17 @@ def categorize(description: str) -> str:
 
 
 # ── Reporting ─────────────────────────────────────────────────────
-def generate_report(db: Database):
+def generate_report(db: Database, bank_account_id: Optional[int] = None):
     """Generate a summary report."""
-    summary = db.get_summary()
-    reconciled = db.get_reconciled()
+    summary = db.get_summary(bank_account_id)
+    reconciled = db.get_reconciled(bank_account_id)
 
     click.echo("\n" + "=" * 60)
     click.echo("  Recon - Reconciliation Report")
     click.echo("  " + datetime.now().strftime("%Y-%m-%d %H:%M"))
+    if bank_account_id:
+        acc = db.get_bank_account(bank_account_id)
+        click.echo(f"  Account: {acc['name']}")
     click.echo("=" * 60)
 
     click.echo(f"\n  Total Bank Transactions:  ${summary['bank_total']:,.2f}")
@@ -273,9 +348,9 @@ def generate_report(db: Database):
     if reconciled:
         click.echo(f"\n  Recent Matches:")
         for r in reconciled[:10]:
-            click.echo(f"  {r['bank_date']} | {r['bank_desc'][:30]:30s} | ${r['bank_amount']:8.2f} -> {r['invoice_id']}")
+            click.echo(f"  {r['bank_date']} | {r['bank_desc'][:30]:30s} | ${r['bank_amount']:8.2f} -> {r['inv_invoice_id']}")
 
-    bank_txns = db.get_all_bank_txns()
+    bank_txns = db.get_all_bank_txns(bank_account_id)
     categories = {}
     for txn in bank_txns:
         cat = categorize(txn['description'])
@@ -295,21 +370,21 @@ def generate_report(db: Database):
     click.echo("\n" + "=" * 60)
 
 
-def export_csv(db: Database, output_path: str):
+def export_csv(db: Database, output_path: str, bank_account_id: Optional[int] = None):
     """Export reconciliation results to CSV."""
-    reconciled = db.get_reconciled()
+    reconciled = db.get_reconciled(bank_account_id)
     with open(output_path, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['Bank Date', 'Description', 'Amount', 'Invoice ID', 'Client', 'Invoice Date'])
         for r in reconciled:
             writer.writerow([
                 r['bank_date'], r['bank_desc'], r['bank_amount'],
-                r['invoice_id'], r['client'], r['inv_date']
+                r['inv_invoice_id'], r['client'], r['inv_date']
             ])
     click.echo(f"  Exported {len(reconciled)} matches to {output_path}")
 
 
-def export_pdf(db: Database, output_path: str):
+def export_pdf(db: Database, output_path: str, bank_account_id: Optional[int] = None):
     """Export reconciliation report to PDF."""
     try:
         from fpdf import FPDF
@@ -317,8 +392,8 @@ def export_pdf(db: Database, output_path: str):
         click.echo("  Error: fpdf2 not installed. Run: pip install fpdf2", err=True)
         return
 
-    summary = db.get_summary()
-    reconciled = db.get_reconciled()
+    summary = db.get_summary(bank_account_id)
+    reconciled = db.get_reconciled(bank_account_id)
 
     pdf = FPDF()
     pdf.add_page()
@@ -326,6 +401,9 @@ def export_pdf(db: Database, output_path: str):
     pdf.cell(0, 10, "Recon - Reconciliation Report", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 8, datetime.now().strftime("%Y-%m-%d"), new_x="LMARGIN", new_y="NEXT", align="C")
+    if bank_account_id:
+        acc = db.get_bank_account(bank_account_id)
+        pdf.cell(0, 8, f"Account: {acc['name']}", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(5)
 
     pdf.set_font("Helvetica", "B", 12)
@@ -343,7 +421,7 @@ def export_pdf(db: Database, output_path: str):
         pdf.cell(0, 8, "Matched Transactions", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 9)
         for r in reconciled:
-            line = f"{r['bank_date']} | {r['bank_desc'][:30]} | ${r['bank_amount']:.2f} -> {r['invoice_id']}"
+            line = f"{r['bank_date']} | {r['bank_desc'][:30]} | ${r['bank_amount']:.2f} -> {r['inv_invoice_id']}"
             pdf.cell(0, 5, line, new_x="LMARGIN", new_y="NEXT")
 
     pdf.output(output_path)
@@ -387,11 +465,16 @@ def cli():
 @click.argument('bank_csv', type=click.Path(exists=True))
 @click.argument('invoices_csv', type=click.Path(exists=True))
 @click.option('--db', default='recon.db', help='Database file path')
-def import_data(bank_csv, invoices_csv, db):
+@click.option('--account', default='Primary', help='Bank account name (Pro feature)')
+def import_data(bank_csv, invoices_csv, db, account):
     """Import bank statement and invoice CSV files."""
     database = Database(db)
-    click.echo("Importing bank statement...")
-    import_bank_csv(database, bank_csv)
+    
+    # Get or create bank account
+    account_id = database.add_bank_account(account)
+    
+    click.echo(f"Importing bank statement to account '{account}'...")
+    import_bank_csv(database, bank_csv, account_id)
     click.echo("Importing invoices...")
     import_invoices_csv(database, invoices_csv)
     click.echo(f"\nDone! Run 'recon reconcile --db {db}' to match them.")
@@ -399,36 +482,93 @@ def import_data(bank_csv, invoices_csv, db):
 
 @cli.command(name='reconcile')
 @click.option('--db', default='recon.db', help='Database file path')
-@click.option('--tolerance', default=3, help='Date tolerance in days for matching')
-def reconcile_cmd(db, tolerance):
+@click.option('--tolerance', default=3, help='Date tolerance in days for matching (Pro: unlimited)')
+@click.option('--account', default=None, help='Bank account name to reconcile (Pro feature)')
+def reconcile_cmd(db, tolerance, account):
     """Match bank transactions to invoices."""
     database = Database(db)
+    
+    # Check Pro for advanced tolerance
+    if tolerance != 3 and not is_pro_enabled():
+        click.echo("  Advanced date tolerance requires Pro. Use --tolerance 3 or upgrade.", err=True)
+        return
+    
+    account_id = None
+    if account:
+        if not is_pro_enabled():
+            click.echo("  Multi-account reconciliation requires Pro.", err=True)
+            return
+        acc = database.get_bank_account_by_name(account)
+        if not acc:
+            click.echo(f"  Account '{account}' not found.", err=True)
+            return
+        account_id = acc['id']
+    
     click.echo("Reconciling...")
-    matched = run_reconcile(database, tolerance)
+    matched = run_reconcile(database, tolerance, account_id)
     click.echo(f"  Matched {matched} transactions")
 
 
 @cli.command()
 @click.option('--db', default='recon.db', help='Database file path')
-@click.option('--output', default=None, help='Export file path')
-@click.option('--pdf', default=None, help='Export PDF report path')
-def report(db, output, pdf):
+@click.option('--output', default=None, help='Export CSV file path (Pro feature)')
+@click.option('--pdf', default=None, help='Export PDF report path (Pro feature)')
+@click.option('--account', default=None, help='Bank account name to filter (Pro feature)')
+def report(db, output, pdf, account):
     """Generate reconciliation report."""
     database = Database(db)
-    generate_report(database)
+    
+    if account:
+        if not is_pro_enabled():
+            click.echo("  Account filtering requires Pro.", err=True)
+            return
+        acc = database.get_bank_account_by_name(account)
+        if not acc:
+            click.echo(f"  Account '{account}' not found.", err=True)
+            return
+        account_id = acc['id']
+    else:
+        account_id = None
+    
+    generate_report(database, account_id)
+    
     if output:
-        export_csv(database, output)
+        if not is_pro_enabled():
+            click.echo("  CSV export requires Pro.", err=True)
+        else:
+            export_csv(database, output, account_id)
+    
     if pdf:
-        export_pdf(database, pdf)
+        if not is_pro_enabled():
+            click.echo("  PDF export requires Pro.", err=True)
+        else:
+            export_pdf(database, pdf, account_id)
 
 
 @cli.command()
 @click.option('--db', default='recon.db', help='Database file path')
-def summary(db):
+@click.option('--account', default=None, help='Bank account name to filter (Pro feature)')
+def summary(db, account):
     """Show quick summary."""
     database = Database(db)
-    s = database.get_summary()
-    click.echo(f"Bank: ${s['bank_total']:,.2f} | Invoices: ${s['invoice_total']:,.2f} | Matched: {s['matched_count']}")
+    
+    if account:
+        if not is_pro_enabled():
+            click.echo("  Account filtering requires Pro.", err=True)
+            return
+        acc = database.get_bank_account_by_name(account)
+        if not acc:
+            click.echo(f"  Account '{account}' not found.", err=True)
+            return
+        account_id = acc['id']
+    else:
+        account_id = None
+    
+    s = database.get_summary(account_id)
+    if account_id:
+        click.echo(f"Account: {account} | Bank: ${s['bank_total']:,.2f} | Invoices: ${s['invoice_total']:,.2f} | Matched: {s['matched_count']}")
+    else:
+        click.echo(f"Bank: ${s['bank_total']:,.2f} | Invoices: ${s['invoice_total']:,.2f} | Matched: {s['matched_count']}")
 
 
 @cli.command()
@@ -438,6 +578,36 @@ def clear(db):
     database = Database(db)
     database.clear_all()
     click.echo("  All data cleared")
+
+
+@cli.command()
+@click.option('--db', default='recon.db', help='Database file path')
+@click.option('--create', default=None, help='Create a new bank account (Pro feature)')
+def accounts(db, create):
+    """List or create bank accounts."""
+    database = Database(db)
+    
+    if create:
+        if not is_pro_enabled():
+            click.echo("  Creating accounts requires Pro.", err=True)
+            return
+        account_id = database.add_bank_account(create)
+        click.echo(f"  Created account '{create}' (ID: {account_id})")
+        return
+    
+    accounts_list = database.get_bank_accounts()
+    if not accounts_list:
+        click.echo("  No bank accounts found.")
+        return
+    
+    click.echo("\n  Bank Accounts:")
+    for acc in accounts_list:
+        # Get transaction count for this account
+        conn = sqlite3.connect(db)
+        count = conn.execute("SELECT COUNT(*) FROM bank_transactions WHERE bank_account_id = ?", (acc['id'],)).fetchone()[0]
+        conn.close()
+        pro_marker = " (Pro)" if acc['id'] != 1 else ""
+        click.echo(f"  {acc['name']}{pro_marker} - {count} transactions")
 
 
 @cli.command()

@@ -9,6 +9,7 @@ Reconcile your bank statements with invoices in seconds. Built for freelancers.
 - Flag unmatched transactions
 - Auto-categorize expenses
 - Generate text, CSV, and PDF reports
+- Multi-bank account support (Pro)
 - Everything runs locally - no server, no database, no domain
 
 ## Installation
@@ -21,7 +22,7 @@ pip install -r requirements.txt
 
 ```bash
 # 1. Import your bank statement and invoices
-python recon.py import_data bank.csv invoices.csv
+python recon.py import-data bank.csv invoices.csv
 
 # 2. Match payments to invoices
 python recon.py reconcile
@@ -29,8 +30,27 @@ python recon.py reconcile
 # 3. See the report
 python recon.py report
 
-# 4. Export to CSV or PDF
+# 4. Export to CSV or PDF (Pro)
 python recon.py report --output matches.csv --pdf report.pdf
+```
+
+## Multi-Bank Accounts (Pro)
+
+```bash
+# Create a new bank account (Pro)
+python recon.py accounts --create "Business Checking"
+
+# List all accounts
+python recon.py accounts
+
+# Import to a specific account
+python recon.py import-data bank.csv invoices.csv --account "Business Checking"
+
+# Reconcile specific account
+python recon.py reconcile --account "Business Checking"
+
+# Report for specific account
+python recon.py report --account "Business Checking" --output business.csv --pdf business.pdf
 ```
 
 ## CSV Format
@@ -59,11 +79,12 @@ INV-1002,XYZ,2026-09-04,3000.00,Paid
 
 | Command | Description |
 |---------|-------------|
-| `import_data` | Import bank and invoice CSV files |
+| `import-data` | Import bank and invoice CSV files |
 | `reconcile` | Match payments to invoices |
 | `report` | Generate summary report |
 | `summary` | Quick one-line overview |
 | `clear` | Reset all data |
+| `accounts` | List or create bank accounts (Pro) |
 | `activate` | Unlock Pro features with license key |
 | `pro` | Check Pro status |
 
@@ -82,7 +103,7 @@ Visit gumroad.com/recon for license keys.
 
 Try with the included sample files:
 ```bash
-python recon.py import_data sample_bank.csv sample_invoices.csv
+python recon.py import-data sample_bank.csv sample_invoices.csv
 python recon.py reconcile
 python recon.py report
 ```
