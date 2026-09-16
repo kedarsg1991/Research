@@ -1,0 +1,12 @@
+Date,Description,Amount,Balance
+2026-09-01,Opening Balance,0.00,12500.00
+2026-09-03,Client ABC - Website Design,-1500.00,11000.00
+2026-09-05,Client XYZ - Consultation,-3000.00,8000.00
+2026-09-08,Amazon Web Services,-45.00,7955.00
+2026-09-10,Client DEF - Mobile App,-5000.00,2955.00
+2026-09-12,Starbucks,-8.50,2946.50
+2026-09-15,Client GHI - SEO Work,-2500.00,446.50
+2026-09-18,Netflix,-15.99,430.51
+2026-09-20,Client JKL - Bug Fix,-1200.00,-769.49
+2026-09-22,ATM Withdrawal,-500.00,-1269.49
+2026-09-25,Client MNO - Hosting Setup,-800.00,-2069.49
